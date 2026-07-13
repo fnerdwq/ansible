@@ -439,6 +439,145 @@ def test_timeout_server_config(timeout_cli, timeout_cfg, timeout_fallback, expec
     assert galaxy_cli.api_servers[0].timeout == expected_timeout
 
 
+@pytest.mark.parametrize('use_client_cert', [True, False])
+def test_client_cert_cli_arg(use_client_cert, monkeypatch, tmp_path):
+    cert_path = str(tmp_path / 'client.pem')
+    key_path = str(tmp_path / 'client.key')
+
+    cli_args = [
+        'ansible-galaxy',
+        'collection',
+        'install',
+        'namespace.collection:1.0.0',
+    ]
+    if use_client_cert:
+        cli_args.extend(['--client-cert', cert_path, '--client-key', key_path])
+
+    galaxy_cli = GalaxyCLI(args=cli_args)
+    mock_execute_install = MagicMock()
+    monkeypatch.setattr(galaxy_cli, '_execute_install_collection', mock_execute_install)
+    galaxy_cli.run()
+
+    assert len(galaxy_cli.api_servers) == 1
+    if use_client_cert:
+        assert galaxy_cli.api_servers[0].client_cert == cert_path
+        assert galaxy_cli.api_servers[0].client_key == key_path
+    else:
+        assert galaxy_cli.api_servers[0].client_cert is None
+        assert galaxy_cli.api_servers[0].client_key is None
+
+
+@pytest.mark.parametrize(
+    ["cert_cli", "expected_client_cert"],
+    [
+        (None, None),
+        ('/path/to/cert.pem', '/path/to/cert.pem'),
+    ]
+)
+def test_client_cert_with_server_url(cert_cli, expected_client_cert, monkeypatch):
+    cli_args = [
+        'ansible-galaxy',
+        'collection',
+        'install',
+        'namespace.collection:1.0.0',
+        '-s', 'https://galaxy.ansible.com',
+    ]
+    if cert_cli is not None:
+        cli_args.extend(['--client-cert', cert_cli])
+
+    galaxy_cli = GalaxyCLI(args=cli_args)
+    mock_execute_install = MagicMock()
+    monkeypatch.setattr(galaxy_cli, '_execute_install_collection', mock_execute_install)
+    galaxy_cli.run()
+
+    assert len(galaxy_cli.api_servers) == 1
+    assert galaxy_cli.api_servers[0].client_cert == expected_client_cert
+
+
+@pytest.mark.parametrize(
+    ["cert_cli", "cert_cfg_server2", "expected_server2_cert", "expected_server3_cert"],
+    [
+        # No CLI, no cfg → None everywhere
+        (None, None, None, None),
+        # cfg on server2 only → server2 gets it, server3 gets None
+        (None, '/cfg/cert.pem', '/cfg/cert.pem', None),
+        # CLI fallback applies where cfg is absent
+        ('/cli/cert.pem', None, '/cli/cert.pem', '/cli/cert.pem'),
+        # cfg takes precedence over CLI fallback
+        ('/cli/cert.pem', '/cfg/cert.pem', '/cfg/cert.pem', '/cli/cert.pem'),
+    ]
+)
+def test_client_cert_server_config(cert_cli, cert_cfg_server2, expected_server2_cert, expected_server3_cert, monkeypatch):
+    server_names = ['server1', 'server2', 'server3']
+    cfg_lines = [
+        "[galaxy]",
+        "server_list=server1,server2,server3",
+        "[galaxy_server.server1]",
+        "url=https://galaxy.ansible.com/api/",
+        "client_cert=/server1/cert.pem",
+        "[galaxy_server.server2]",
+        "url=https://galaxy.ansible.com/api/",
+        "[galaxy_server.server3]",
+        "url=https://galaxy.ansible.com/api/",
+    ]
+    if cert_cfg_server2 is not None:
+        cfg_lines.insert(cfg_lines.index("[galaxy_server.server3]"), "client_cert=%s" % cert_cfg_server2)
+
+    cli_args = [
+        'ansible-galaxy',
+        'collection',
+        'install',
+        'namespace.collection:1.0.0',
+    ]
+    if cert_cli is not None:
+        cli_args.extend(['--client-cert', cert_cli])
+
+    monkeypatch.setattr(C, 'GALAXY_SERVER_LIST', server_names)
+
+    with tempfile.NamedTemporaryFile(suffix='.cfg') as tmp_file:
+        tmp_file.write(to_bytes('\n'.join(cfg_lines), errors='surrogate_or_strict'))
+        tmp_file.flush()
+
+        monkeypatch.setattr(C.config, '_config_file', tmp_file.name)
+        C.config._parse_config_file()
+        galaxy_cli = GalaxyCLI(args=cli_args)
+        mock_execute_install = MagicMock()
+        monkeypatch.setattr(galaxy_cli, '_execute_install_collection', mock_execute_install)
+        galaxy_cli.run()
+
+    # server1 always has its own cert from cfg
+    assert galaxy_cli.api_servers[0].client_cert == '/server1/cert.pem'
+    assert galaxy_cli.api_servers[1].client_cert == expected_server2_cert
+    assert galaxy_cli.api_servers[2].client_cert == expected_server3_cert
+
+
+def test_download_file_client_cert(tmp_path_factory, monkeypatch):
+    """client_cert and client_key are forwarded to open_url."""
+    temp_dir = to_bytes(tmp_path_factory.mktemp('test-download-cert'))
+
+    data = b"\x00\x01\x02\x03"
+    from hashlib import sha256 as _sha256
+    sha256_hash = _sha256()
+    sha256_hash.update(data)
+
+    mock_open = MagicMock()
+    mock_open.return_value = BytesIO(data)
+    monkeypatch.setattr(collection.concrete_artifact_manager, 'open_url', mock_open)
+
+    collection._download_file(
+        'http://example.com/col.tar.gz',
+        temp_dir,
+        sha256_hash.hexdigest(),
+        True,
+        client_cert='/path/cert.pem',
+        client_key='/path/key.pem',
+    )
+
+    call_kwargs = mock_open.call_args[1]
+    assert call_kwargs.get('client_cert') == '/path/cert.pem'
+    assert call_kwargs.get('client_key') == '/path/key.pem'
+
+
 def test_build_collection_no_galaxy_yaml():
     fake_path = u'/fake/ÅÑŚÌβŁÈ/path'
     expected = to_native("The collection galaxy.yml path '%s/galaxy.yml' does not exist." % fake_path)

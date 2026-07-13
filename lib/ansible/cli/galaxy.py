@@ -92,6 +92,13 @@ def with_collection_artifacts_manager(wrapped_method):
                 'ignore_signature_errors': context.CLIARGS.get('ignore_gpg_errors', None),
             })
 
+        client_cert = context.CLIARGS.get('client_cert', None)
+        if client_cert is not None:
+            artifacts_manager_kwargs['client_cert'] = GalaxyCLI._resolve_path(client_cert)
+        client_key = context.CLIARGS.get('client_key', None)
+        if client_key is not None:
+            artifacts_manager_kwargs['client_key'] = GalaxyCLI._resolve_path(client_key)
+
         with ConcreteArtifactsManager.under_tmpdir(
                 C.DEFAULT_LOCAL_TMP,
                 **artifacts_manager_kwargs
@@ -240,6 +247,10 @@ class GalaxyCLI(CLI):
                             help='The Ansible Galaxy API key which can be found at '
                                  'https://galaxy.ansible.com/me/preferences.')
         common.add_argument('-c', '--ignore-certs', action='store_true', dest='ignore_certs', help='Ignore SSL certificate validation errors.', default=None)
+        common.add_argument('--client-cert', dest='client_cert', default=None,
+                            help='PEM formatted certificate chain file for client TLS authentication.')
+        common.add_argument('--client-key', dest='client_key', default=None,
+                            help='PEM formatted file containing the private key for client TLS authentication.')
 
         # --timeout uses the default None to handle two different scenarios.
         # * --timeout > C.GALAXY_SERVER_TIMEOUT for non-configured servers
@@ -659,6 +670,10 @@ class GalaxyCLI(CLI):
             if server_options['validate_certs'] is None:
                 server_options['validate_certs'] = context.CLIARGS['resolved_validate_certs']
             validate_certs = server_options['validate_certs']
+            if server_options['client_cert'] is None:
+                server_options['client_cert'] = context.CLIARGS.get('client_cert')
+            if server_options['client_key'] is None:
+                server_options['client_key'] = context.CLIARGS.get('client_key')
 
             # default case if no auth info is provided.
             server_options['token'] = None
@@ -690,6 +705,8 @@ class GalaxyCLI(CLI):
         cmd_token = GalaxyToken(token=context.CLIARGS['api_key'])
 
         validate_certs = context.CLIARGS['resolved_validate_certs']
+        cmd_client_cert = context.CLIARGS.get('client_cert')
+        cmd_client_key = context.CLIARGS.get('client_key')
         default_server_timeout = context.CLIARGS['timeout'] if context.CLIARGS['timeout'] is not None else C.GALAXY_SERVER_TIMEOUT
         if cmd_server:
             # Cmd args take precedence over the config entry but fist check if the arg was a name and use that config
@@ -703,6 +720,8 @@ class GalaxyCLI(CLI):
                     priority=len(config_servers) + 1,
                     validate_certs=validate_certs,
                     timeout=default_server_timeout,
+                    client_cert=cmd_client_cert,
+                    client_key=cmd_client_key,
                     **galaxy_options
                 ))
         else:
@@ -715,6 +734,8 @@ class GalaxyCLI(CLI):
                 priority=0,
                 validate_certs=validate_certs,
                 timeout=default_server_timeout,
+                client_cert=cmd_client_cert,
+                client_key=cmd_client_key,
                 **galaxy_options
             ))
 
