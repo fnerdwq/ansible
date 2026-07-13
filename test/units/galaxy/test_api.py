@@ -1299,3 +1299,50 @@ def test_cache_missing_results_raises_descriptive_error(mocker):
             cache=True,
             cache_key='/api/v1/roles/'
         )
+
+
+def test_mtls_client_cert_and_key_passed_to_open_url(monkeypatch):
+    mock_open = MagicMock()
+    mock_open.return_value = StringIO(u'{"results":[]}')
+    monkeypatch.setattr(galaxy_api, 'open_url', mock_open)
+
+    api = GalaxyAPI(None, "test", "https://galaxy.ansible.com/api/",
+                    client_cert='/path/to/client.pem', client_key='/path/to/client.key')
+    api._available_api_versions = {'v1': 'v1/'}
+    api._call_galaxy('https://galaxy.ansible.com/api/v1/roles/')
+
+    call_kwargs = mock_open.call_args[1]
+    assert call_kwargs['client_cert'] == '/path/to/client.pem'
+    assert call_kwargs['client_key'] == '/path/to/client.key'
+
+
+def test_mtls_no_client_cert_defaults_to_none(monkeypatch):
+    mock_open = MagicMock()
+    mock_open.return_value = StringIO(u'{"results":[]}')
+    monkeypatch.setattr(galaxy_api, 'open_url', mock_open)
+
+    api = GalaxyAPI(None, "test", "https://galaxy.ansible.com/api/")
+    api._available_api_versions = {'v1': 'v1/'}
+    api._call_galaxy('https://galaxy.ansible.com/api/v1/roles/')
+
+    call_kwargs = mock_open.call_args[1]
+    assert call_kwargs['client_cert'] is None
+    assert call_kwargs['client_key'] is None
+
+
+def test_mtls_client_cert_key_passed_to_authenticate(monkeypatch):
+    mock_open = MagicMock()
+    mock_open.side_effect = [
+        StringIO(u'{"available_versions":{"v1":"v1/"}}'),
+        StringIO(u'{"token":"my_token"}'),
+    ]
+    monkeypatch.setattr(galaxy_api, 'open_url', mock_open)
+
+    api = GalaxyAPI(None, "test", "https://galaxy.ansible.com/api/",
+                    client_cert='/path/to/client.pem', client_key='/path/to/client.key')
+    api.authenticate("github_token")
+
+    # second call is the authenticate POST — check it carries the mTLS kwargs
+    auth_kwargs = mock_open.call_args_list[1][1]
+    assert auth_kwargs['client_cert'] == '/path/to/client.pem'
+    assert auth_kwargs['client_key'] == '/path/to/client.key'
